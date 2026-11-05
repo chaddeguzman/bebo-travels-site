@@ -1,0 +1,54 @@
+name: Website checks and deployment
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the exported website
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+          root = Path('site')
+          assert (root / 'index.html').is_file(), 'Missing exported website'
+          allowed = {'.html', '.js', '.css', '.svg', '.webp', '.woff', '.woff2', '.mp3', '.wav', '.ogg', '.txt'}
+          for item in root.rglob('*'):
+              assert not item.is_symlink(), f'Linked file: {item}'
+              if not item.is_file(): continue
+              assert item.name == '.nojekyll' or item.suffix in allowed, f'Unexpected file: {item}'
+              if item.suffix in {'.js', '.html', '.css', '.txt', '.svg'}:
+                  text = item.read_text(encoding='utf-8')
+                  assert not re.search(r'/api/auth/|\.local-project|PRIVATE_\w*SENTINEL|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-proj-[A-Za-z0-9_-]{20,}', text), f'Private content: {item}'
+          html = (root / 'index.html').read_text(encoding='utf-8')
+          for reference in re.findall(r'(?:src|href)="([^"]+)"', html):
+              assert reference.startswith('./'), f'Non-relative asset: {reference}'
+              assert (root / reference).is_file(), f'Missing asset: {reference}'
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        id: deployment
